@@ -1,0 +1,199 @@
+{
+  "task_level": "level_1",
+  "domain": "RL",
+  "upstream_contract_present": true,
+  "contract_traceability": [
+    "research/ACTION_SPACE_INCREMENTAL_RL.md — Lifecycle contract with novelty claims, baseline requirements, evaluation requirements, and blocking unknowns",
+    "architect/ACTION_INCREMENTAL_RL_ARCHITECTURE.md — Architecture design with traceability table mapping each contract item to implementation decisions",
+    "architect/model_config.py, components.py, agent.py, train.py — Implementation files",
+    "coder/networks.py, agent.py, env_wrapper.py, train.py, smoke_test.py — Executable implementation with 22 smoke tests passing",
+    "validator/test_model.py — Comprehensive test suite (Layer 1-2): shape, gradient, RL correctness, numerics, benchmarks",
+    "validator/run_ablations.py — Ablation runner (Layer 3): 14 single-field config ablations",
+    "validator/profile_model.py — Profiling script (Layer 4): forward, train, expansion with FLOP estimates"
+  ],
+  "baseline_status": [
+    "retrain_from_scratch: IMPLEMENTED (TODO) — train.py supports --env cartpole for demoware; custom environment not yet implemented; ablation runner provides proxy evaluation only",
+    "fixed_action_oracle: NOT_IMPLEMENTED — No script that trains with full action set from beginning (requires pre-built custom environment)",
+    "zero_initialization: IMPLEMENTED (ablation) — ablation runner includes 'no_knn_init' (k_nn=0) which uses random init as a proxy for zero-init",
+    "gas_adapted_baseline: NOT_IMPLEMENTED — Farquhar et al. parent-child Q-decomposition requires known hierarchy; not applicable to unexpected expansion setting"
+  ],
+  "claim_status_summary": {
+    "grounded": [
+      "Nested action hierarchy enables provable monotonic value transfer (Farquhar et al., ICML 2020)",
+      "Page-Hinkley drift detection enables on-the-fly detection (de la Rosa et al., 2026)",
+      "Action embeddings via InfoNCE can generalize across action-set sizes (Sinii et al., 2023)",
+      "Progressive networks prevent catastrophic forgetting at cost of linear parameter growth (Rusu et al., 2016)"
+    ],
+    "hypothesis": [
+      "Similarity-based Q-transfer from known to new actions in embedding space provides better-than-random initialization — tested via 'no_knn_init' ablation in ablation runner",
+      "Factorized Q(s,a) = f_Q(φ(s), e_a) minimizes interference — tested via 'dueling_q' and baseline comparison in ablation runner",
+      "Freezing the base encoder during initial fine-tuning prevents catastrophic forgetting — tested via 'no_freeze_encoder' ablation",
+      "Softmax denominator shift from adding new actions causes measurable degradation — dueling variant with known-action-only centering implemented as mitigation"
+    ],
+    "TODO_unverified": [
+      "No deep RL method handles truly unexpected action-space expansion without predefined hierarchy or tabular state space — novelty claim pending empirical validation against baselines",
+      "No standardized Gymnasium benchmark exists for action-space incremental RL — custom DAVE-game environment raises NotImplementedError",
+      "The quantitative impact of softmax denominator shift on old-action logits is unmeasured — dueling centering mitigation implemented but no measurement script",
+      "k-NN initialization quality for semantically novel actions (e.g., 'shoot' vs. movement) — core hypothesis could be falsified if embeddings lack structure",
+      "Full baseline comparisons (retrain-from-scratch, fixed-action-oracle) not yet run due to missing custom environment"
+    ]
+  },
+  "scores": {
+    "novelty": {
+      "score": 3,
+      "evidence": [
+        "The factorized Q architecture with k-NN embedding initialization differs from GAS (requires predefined hierarchy), morphin (tabular), and Headless-AD (bandit/MDP only)",
+        "Progressive unfreezing schedule (Phase 1-2-3) is novel for action-space expansion specifically (not task-incremental learning)",
+        "Optimistic exploration bonus combined with embedding interpolation is a non-obvious combination"
+      ],
+      "concerns": [
+        "No empirical evidence yet that the method works — all tests are on synthetic/proxy tasks",
+        "Could be seen as an engineering combination of existing techniques (GAS embeddings + progressive nets + DQN) rather than a fundamentally new algorithm",
+        "The centroid-based k-NN initialization uses all known embeddings equally — no semantic distinction between actions"
+      ]
+    },
+    "experimental_comprehensiveness": {
+      "score": 3,
+      "evidence": [
+        "22 smoke tests covering all components, forward shapes, gradients, expansion, freeze schedule",
+        "39 pytest tests covering shapes, gradients, RL correctness, numerics, and synthetic benchmarks",
+        "14 ablation conditions covering embedding init, optimizer bonus, freeze schedule, Q-form, aux loss, embedding dimension, similarity metric",
+        "Profiling script for forward pass, training step, and expansion cost",
+        "Both q_form variants tested (factorized and dueling_factorized)"
+      ],
+      "concerns": [
+        "No custom Gymnasium environment implemented — DAVE-game, continuous control, and goal-conditioned scenarios raise NotImplementedError",
+        "No full training-based evaluation — proxy metric uses random states, not environment interaction rewards",
+        "Retrain-from-scratch baseline not implemented (requires custom environment)",
+        "Fixed-action-oracle baseline not implemented (requires full action set from beginning)",
+        "No GAS-adapted baseline (not applicable but could serve as comparison if hierarchy can be post-hoc imposed)",
+        "No statistical rigor (10 seeds per condition) — all tests use single seed"
+      ]
+    },
+    "theoretical_foundation": {
+      "score": 4,
+      "evidence": [
+        "Monotonicity property of nested action spaces correctly cited and applied",
+        "Factorized Q(s,a) = f_Q(φ(s), e_a) justified with decoupling argument",
+        "k-NN centroid initialization justified as minimax optimal under no semantic descriptor",
+        "Off-policy (DQN) correctly justified over on-policy for this problem setting",
+        "Progressive unfreeze schedule grounded in continual learning principles",
+        "Softmax denominator shift problem identified and dueling centering mitigation implemented"
+      ],
+      "concerns": [
+        "The auxiliary dynamics loss justification (creates semantically meaningful embedding space) is plausible but untested — no embedding visualization or t-SNE analysis",
+        "No formal proof that the factorized architecture preserves the monotonicity property under function approximation"
+      ]
+    },
+    "result_analysis": {
+      "score": 2,
+      "evidence": [
+        "Ablation runner produces comparative metrics across 14 conditions",
+        "Q-degradation metric computed before/after expansion",
+        "Expansion cooldown guard tested to prevent rapid successive expansions"
+      ],
+      "concerns": [
+        "No training-based results — all evaluations use synthetic random states, not actual environment rollouts",
+        "No confidence intervals or multiple-seed statistics",
+        "No comparison to retrain-from-scratch or fixed-action-oracle",
+        "No training curves (episode rewards over time)",
+        "No sensitivity analysis for key hyperparameters (k_nn values, embedding dims)"
+      ]
+    },
+    "implementation_reproducibility": {
+      "score": 4,
+      "evidence": [
+        "All smoke tests pass: python smoke_test.py",
+        "All pytest tests runnable with single command",
+        "Ablation runner produces JSON output: python run_ablations.py",
+        "Profiling script runnable with --mode flags",
+        "All hyperparameters documented in ModelConfig dataclass with sensible defaults",
+        "Random seeds propagated through torch.manual_seed and np.random.seed",
+        "Gradient hook (freeze mask) is torch.compile-compatible",
+        "bf16/fp16 safety noted in network forward passes"
+      ],
+      "concerns": [
+        "Train.py raises NotImplementedError for dave environment",
+        "Custom benchmark environment still TODO (Gap 4 from research contract)",
+        "No setup.py or requirements.txt — dependencies (gymnasium, numpy, torch) must be pre-installed",
+        "No Dockerfile or environment specification for exact reproduction"
+      ]
+    },
+    "writing_readiness": {
+      "score": 3,
+      "evidence": [
+        "Architecture is well-documented with ASCII diagrams in the architect document",
+        "Inductive bias justification table covers 12 design choices",
+        "Research-to-architecture traceability table maps 10 contract items to implementation",
+        "Implementation risk flags documented with likelihood, impact, and mitigations",
+        "Ablation table with 8 conditions, tier ordering, and expected metric movements"
+      ],
+      "concerns": [
+        "No paper draft or abstract",
+        "No literature review section written (only gap analysis table)",
+        "No results section — no training curves, no comparison tables",
+        "No limitations section beyond implementation risks",
+        "No discussion of broader impact or ethical considerations"
+      ]
+    }
+  },
+  "blocking_gaps": [
+    "benchmark_not_beaten: No custom Gymnasium environment (DAVE-game analogue, continuous control, goal-conditioned). All three raise NotImplementedError. Cannot run full training-based evaluation without this.",
+    "benchmark_not_beaten: Retrain-from-scratch baseline not implemented. Cannot claim sub-linear fine-tuning without this comparison.",
+    "benchmark_not_beaten: Fixed-action-oracle baseline not implemented. Cannot compute % total training steps saved.",
+    "benchmark_not_beaten: No GAS-adapted baseline (may not be applicable but noted as requirement in research contract).",
+    "coverage_gap: Only proxy evaluation metrics (Q stats on random states), not actual environment rewards.",
+    "coverage_gap: No multiple-seed (≥10) experiments. All tests use single seed.",
+    "coverage_gap: No embedding quality evaluation (t-SNE, cosine similarity matrix, k-NN init quality vs. random).",
+    "novelty_unverified: Core hypothesis (k-NN initialization provides better-than-random Q-values for new actions) untested on actual RL task.",
+    "claim_not_grounded: 'Sub-linear fine-tuning cost' claim cannot be validated without retrain-from-scratch comparison on actual environment.",
+    "claim_not_grounded: 'No catastrophic forgetting' claim partially tested (frozen encoder preserves old Q-values in Phase 1) but not validated through full training."
+  ],
+  "recommended_next_experiments": [
+    {
+      "priority": "P0",
+      "experiment": "Implement custom Gymnasium environment (DAVE-game analogue) with expanding action sets at level transitions",
+      "addresses": ["benchmark_not_beaten", "coverage_gap"]
+    },
+    {
+      "priority": "P0",
+      "experiment": "Run full training with retrain-from-scratch baseline: compare total environment steps to reach equivalent performance",
+      "addresses": ["benchmark_not_beaten", "claim_not_grounded"]
+    },
+    {
+      "priority": "P1",
+      "experiment": "k-NN init vs. random init comparison on actual RL task: measure zero-shot Q(a_new) at first encounter after expansion",
+      "addresses": ["novelty_unverified"]
+    },
+    {
+      "priority": "P1",
+      "experiment": "Run 10 seeds per condition, report mean ± std for all metrics",
+      "addresses": ["coverage_gap"]
+    },
+    {
+      "priority": "P1",
+      "experiment": "Embedding space analysis: t-SNE visualization, cosine similarity matrix, k-NN init quality metric",
+      "addresses": ["coverage_gap"]
+    },
+    {
+      "priority": "P2",
+      "experiment": "Hyperparameter sensitivity sweep: k_nn in {1, 3, 5, 10}, d_embedding in {8, 16, 64, 256}, freeze_steps in {100, 1000, 10000, 100000}",
+      "addresses": ["coverage_gap"]
+    },
+    {
+      "priority": "P2",
+      "experiment": "Q-degradation measurement: log old-action Q-values at fixed (state, action) pairs before/after expansion through full training",
+      "addresses": ["claim_not_grounded"]
+    },
+    {
+      "priority": "P3",
+      "experiment": "Continuous control scenario (MuJoCo with expanding action dimension)",
+      "addresses": ["coverage_gap"]
+    },
+    {
+      "priority": "P3",
+      "experiment": "Auxiliary dynamics loss ablation: t-SNE comparison of embedding spaces with vs. without aux loss",
+      "addresses": ["coverage_gap"]
+    }
+  ]
+}
