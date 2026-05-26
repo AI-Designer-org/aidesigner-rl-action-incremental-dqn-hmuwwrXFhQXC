@@ -1,0 +1,1016 @@
+\documentclass{article}
+
+% --- Track option: Workshop (anonymous submission) ---
+% No trained-model results exist; this is a reference architecture
+% and validation-harness paper. Use submission mode (no option).
+\usepackage{neurips_2026}
+
+% --- Required packages ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{enumitem}
+% \usepackage{subcaption}
+% \usepackage{algorithm}
+% \usepackage{algpseudocode}
+
+% --- Title & authors (anonymous submission) ---
+\title{Action-Incremental DQN: A Reference Architecture and Validation Harness
+  for Unexpected Action-Space Expansion in Deep Reinforcement Learning}
+
+\author{%
+  Anonymous Author(s) \\
+  Affiliation \\
+  Address \\
+  \texttt{email} \\
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Standard deep reinforcement learning assumes a fixed action space that is known
+before training and never changes. In many real-world settings---video games that
+unlock new abilities at higher levels, robots fitted with new end-effectors, and
+agents that discover new affordances---unexpected actions become available
+mid-training, and retraining from scratch discards prior knowledge. We present a
+reference architecture and validation harness for this understudied problem. The
+architecture uses three mechanisms: (i) a factorized Q-function
+$Q(s,a)=f_Q(\varphi(s),e_a)$ that decouples action identity from value
+estimation via a learnable action-embedding table; (ii) $k$-nearest-neighbour
+centroid interpolation in embedding space that initialises novel actions from
+existing action structure; and (iii) a progressive three-phase unfreezing
+schedule designed to mitigate catastrophic forgetting during post-expansion
+fine-tuning. The validation harness spans shape correctness (12 tests), gradient
+flow (5 tests), RL-specific properties (10 tests), and numerical stability
+including bf16 forward-pass safety (9 tests), supplemented by 17 synthetic
+micro-benchmarks---53 automated tests in total. A 14-condition ablation study
+characterises the design space along embedding dimension, initialisation
+strategy, freeze schedule, Q-function form, and auxiliary loss configuration,
+using synthetic proxy metrics on random states. The custom Gymnasium benchmark
+environment, trained-model evaluation on real tasks, and baseline comparisons
+are explicitly out of scope and identified as natural follow-up work. The
+reference implementation and harness are included in the accompanying
+submission package as a reproducible starting point for the community.
+\end{abstract}
+
+
+\section{Introduction}
+
+Deep reinforcement learning has achieved remarkable successes across domains
+from game play~\cite{mnih2015human, mnih2013playing} to continuous
+control~\cite{lillicrap2015continuous}. Key advances such as double
+Q-learning~\cite{vanhasselt2016deep}, dueling network
+architectures~\cite{wang2016dueling}, and proximal policy
+optimisation~\cite{schulman2017proximal} have further improved stability and
+performance across diverse settings. A tacit assumption shared by nearly all
+these methods is that the action set $\mathcal{A}$ is fixed at the start of
+training and never changes. The agent's policy $\pi(a \mid s)$ and value
+function $Q(s,a)$ are parameterised for exactly $|\mathcal{A}|$ outputs, and
+any addition or removal of actions requires architectural modification and,
+typically, retraining from scratch.
+
+This assumption fails in numerous practically important settings. Video games
+frequently unlock new abilities at level transitions---the player-character in
+the classic game \textit{Dave} acquires a ``shoot'' action in level~3, having
+only movement actions (up, left, right) in earlier levels. Robots may be fitted
+with new end-effectors mid-deployment. Skill-learning agents may discover new
+affordances through interaction. In all these cases, retraining from scratch
+wastes the knowledge encoded in the agent's state representations, value
+estimates, and exploration history.
+
+Existing work addresses closely related but distinct settings. \emph{Growing
+Action Spaces} (GAS)~\cite{farquhar2020growing} requires a predefined nested
+action hierarchy that must be specified before training begins---it cannot
+handle truly unexpected additions. \emph{Morphin}~\cite{delarosa2026morphin}
+detects action-space changes via Page-Hinkley drift and expands Q-tables on the
+fly, but is tabular only. \emph{Headless-AD}~\cite{sinii2023headless} uses
+action embeddings to generalise to unseen action-set sizes at test time, but
+addresses bandit and MDP settings rather than deep RL with complex state
+spaces. \emph{Progressive Neural
+Networks}~\cite{rusu2016progressive} prevent catastrophic forgetting by adding
+frozen columns for new tasks, but incur linear parameter growth.
+
+To our knowledge, prior work does not directly address the scenario where a
+truly unexpected action appears mid-training in deep reinforcement learning
+without a predefined hierarchy, a tabular state space, or the requirement to
+retrain from scratch. In this paper we present a design artifact---a reference
+architecture and validation harness---that targets this gap. Our contributions
+are:
+
+\begin{itemize}
+  \item \textbf{A reference architecture}, Action-Incremental DQN, with a typed
+  \texttt{ModelConfig} contract, a factorized Q-function
+  $Q(s,a)=f_Q(\varphi(s),e_a)$, a dynamically expandable action-embedding
+  table, and a progressive three-phase unfreezing schedule.
+  \item \textbf{A validation harness} covering shape correctness (12 tests),
+  gradient flow (5 tests), RL-specific correctness properties (10 tests),
+  numerical stability including bf16 forward-pass safety (9 tests), and
+  synthetic micro-benchmarks (17 tests)---53 automated tests in total.
+  \item \textbf{A 14-condition ablation study} characterising the design space
+  along the dimensions of embedding initialisation, exploration bonus, freeze
+  schedule, Q-function form, auxiliary loss, embedding dimension, and
+  similarity metric.
+  \item \textbf{A reference implementation} included in the submission package,
+  with a profiler, ablation runner, and demoware (CartPole with simulated
+  action expansion) for reproducible follow-up work.
+\end{itemize}
+
+Crucially, we do \emph{not} claim empirical superiority over baselines on
+real-world tasks. The custom Gymnasium benchmark environment, trained-model
+evaluation, and baseline comparisons (retrain-from-scratch, fixed-action
+oracle) are explicitly out of scope and identified as the natural next step.
+This paper is appropriate for a workshop or systems-and-reproducibility track:
+it provides the architectural blueprint, the validation infrastructure, and an
+honest characterisation of what is---and is not---yet known.
+
+The remainder of the paper is organised as follows. Section~\ref{sec:related}
+surveys related work. Section~\ref{sec:method} describes the architecture and
+its design rationale. Section~\ref{sec:setup} details the validation harness.
+Section~\ref{sec:results} presents synthetic micro-benchmark and ablation
+results. Section~\ref{sec:discussion} discusses implications and limitations.
+Section~\ref{sec:conclusion} concludes with concrete follow-up directions.
+
+
+\section{Related Work}
+\label{sec:related}
+
+We organise related work along four axes: predefined action hierarchies,
+on-the-fly tabular expansion, in-context action generalisation, and
+task-incremental continual learning.
+
+\subsection{Predefined Action Hierarchies}
+
+Farquhar et al.~\cite{farquhar2020growing} proposed Growing Action Spaces
+(GAS), which extends DQN to settings where the action set grows according to a
+known nested hierarchy $\mathcal{A}_0 \subset \mathcal{A}_1 \subset \dots
+\subset \mathcal{A}_{N-1}$. The core insight is the \emph{monotonicity
+property}: the optimal value function satisfies $V^*_i(s) \leq V^*_j(s)$ for
+$i < j$, ensuring that larger action spaces never degrade optimal value. GAS
+achieves this through parent-child Q-decomposition, where each action's
+Q-value is expressed relative to its parent in the hierarchy. However, the
+hierarchy must be fully specified before training begins, and the curriculum of
+action introductions is hand-designed. This precludes the unexpected-addition
+scenario motivating our work. Seyde et
+al.~\cite{seyde2024growing} proposed Growing Q-Networks (GQN), extending the
+hierarchical principle to continuous action spaces but similarly requiring
+prior knowledge of the action structure.
+
+\subsection{On-the-Fly Tabular Expansion}
+
+De la Rosa et al.~\cite{delarosa2026morphin} introduced morphin, which uses
+Page-Hinkley drift detection to identify when the action space has changed and
+expands the Q-table by inserting new rows. The method is self-adaptive,
+adjusting the exploration rate $\varepsilon$ and learning rate $\alpha$ after
+each detected change. While morphin demonstrates that on-the-fly detection and
+expansion is feasible, it operates exclusively in the tabular setting and does
+not generalise to deep RL with function approximation. The authors explicitly
+identify that their drift detector fails when the new reward distribution is a
+subset of previously seen values.
+
+\subsection{In-Context Action Generalisation}
+
+Sinii et al.~\cite{sinii2023headless} proposed Headless-AD, which decouples
+the action representation from the policy architecture by using random action
+embeddings at training time and an InfoNCE loss to align action semantics. At
+test time, the method can handle more actions than were seen during training by
+embedding new actions into the same space. This demonstrates that action
+embeddings can generalise across action-set sizes, providing evidence for a key
+assumption of our architecture. However, Headless-AD operates in bandit and
+MDP settings, and does not address the incremental introduction of actions
+\emph{during training}---it handles generalisation to larger fixed sets at
+test time.
+
+\subsection{Task-Incremental Continual Learning}
+
+Progressive Neural Networks~\cite{rusu2016progressive} (PNN) address
+catastrophic forgetting in task-incremental learning by allocating a new
+network column for each new task, with lateral connections to previously
+learned columns. While PNN prevents forgetting by construction, it incurs
+linear parameter growth in the number of tasks, requires task identity at test
+time, and adds entire network columns rather than lightweight action-head
+expansions. Elastic Weight Consolidation~\cite{kirkpatrick2017overcoming} and
+other regularisation-based continual learning methods offer an alternative, but
+are designed for task boundaries rather than action-space boundaries within a
+single task. Venkatesan and Er~\cite{venkatesan2016progressive} proposed a
+progressive learning technique for multi-class classification that shares the
+spirit of incremental capacity expansion, though their setting (classification
+with new classes) differs fundamentally from the temporally extended,
+reward-driven RL setting we address.
+
+\subsection{Research Gap}
+
+The literature reveals a clear gap: to our knowledge, no existing deep RL
+method addresses the truly unexpected, mid-training introduction of new actions
+without a predefined hierarchy (GAS), a tabular state space (morphin), or
+relaxation to a bandit/MDP setting (Headless-AD). The core architectural
+question---whether a factorized Q-function with learnable action embeddings can
+provide zero-shot transfer and sub-linear fine-tuning for unexpected
+actions---remains open. Our work provides a concrete architectural hypothesis
+and the validation infrastructure to test it.
+
+
+\section{Method}
+\label{sec:method}
+
+\subsection{Architecture Overview}
+
+We present a factorized action-value architecture that decouples action identity
+from the Q-function. The core design is illustrated in Figure~\ref{fig:arch}.
+
+\begin{figure}[h]
+  \centering
+  \begin{minipage}{0.85\linewidth}
+  {\small
+  \begin{verbatim}
+         Observation s
+                |
+                v
+    +------------------------+
+    | State Encoder phi(s)   |   MLP or CNN
+    | Output: R^{256}        |
+    | + LayerNorm            |
+    +-----------+------------+
+                |
+                | phi(s)
+      +---------+---------+
+      |                   |
+      v                   v
+  +-----------+   +-----------------+
+  | Value     |   | Action          |
+  | Head V(s) |   | Embedding Table |
+  | (dueling) |   | E in R^{|A|x64} |
+  +-----+-----+   +--------+--------+
+        |                  |
+        |           e_a = E[a]
+        |                  |
+        +--------+---------+
+                 |
+                 v
+        +----------------------+
+        | Q-Head f_Q           |
+        | MLP(concat[phi; e_a]) |
+        | 320 -> 128 -> 1      |
+        +----------+-----------+
+                   |
+                   v
+             Q(s, a) = V(s) + A(s,a)  (dueling)
+          or Q(s, a) = f_Q(phi, e_a)  (factorized)
+  \end{verbatim}
+  }
+  \end{minipage}
+  \caption{Architecture overview. The state encoder $\varphi(s)$ produces a
+  fixed-dimensional representation. Each action $a$ is represented by a
+  learnable embedding $e_a$ in an expandable table. The Q-function $f_Q$
+  operates on the concatenation $[\varphi(s); e_a]$, decoupling action identity
+  from value estimation.}
+  \label{fig:arch}
+\end{figure}
+
+\paragraph{State encoder.} The encoder
+$\varphi: \mathbb{R}^{d_\text{obs}} \to \mathbb{R}^{d_\text{enc}}$ maps
+observations to a fixed-dimensional representation. For vector observations
+(default: $d_\text{obs}=64$), $\varphi$ is a 3-layer MLP with hidden dimension
+256, ReLU activations, and LayerNorm on the output. For image observations,
+$\varphi$ uses a standard DQN-style CNN with three convolutional layers
+followed by a linear projection to $d_\text{enc}=256$.
+
+\paragraph{Action embedding table.} Each action $a$ is associated with a
+learnable embedding vector $e_a \in \mathbb{R}^{d_\text{emb}}$, stored in a
+table $E \in \mathbb{R}^{|\mathcal{A}| \times d_\text{emb}}$ (default
+$d_\text{emb}=64$). The table supports dynamic row insertion via
+\texttt{add\_embedding()}, which appends a new row without disrupting existing
+embeddings. Gradient freezing is implemented at the per-row level through a
+gradient hook that zeroes gradients for specified rows---this is
+\texttt{torch.compile}-compatible.
+
+\paragraph{Factorized Q-function.} The Q-function is defined as:
+
+\begin{equation}
+Q(s,a) = f_Q([\varphi(s); e_a]), \label{eq:factorized}
+\end{equation}
+
+where $f_Q: \mathbb{R}^{d_\text{enc} + d_\text{emb}} \to \mathbb{R}$ is a
+small MLP (two hidden layers of dimension 128). In the \emph{dueling
+factorized} variant, we additionally decompose:
+
+\begin{equation}
+Q(s,a) = V(\varphi(s)) + A([\varphi(s); e_a]), \label{eq:dueling}
+\end{equation}
+
+where $V$ is a state-value head and $A$ is an advantage head. The advantage
+values for known actions are mean-centred only over the known action set,
+which mitigates the softmax denominator shift that occurs when new actions are
+added.
+
+\subsection{Action Expansion Protocol}
+
+When a new action $a_\text{new}$ is detected---the environment's action space
+grows beyond the agent's current count---the agent follows a four-step
+protocol.
+
+\paragraph{Step 1: $k$-NN embedding initialisation.} The new action's
+embedding $e_\text{new}$ is initialised via $k$-nearest-neighbour centroid
+interpolation in the existing embedding space. Let
+$E_\text{known} \in \mathbb{R}^{|\mathcal{A}_\text{known}| \times d_\text{emb}}$
+be the embeddings of all known actions. We compute:
+
+\begin{align}
+\text{centroid} &= \frac{1}{|\mathcal{A}_\text{known}|}
+  \sum_{a \in \mathcal{A}_\text{known}} e_a, \label{eq:centroid} \\
+\text{neighbours} &= \operatorname{top-}k_{e \in E_\text{known}}
+  \operatorname{sim}(\text{centroid}, e), \label{eq:knn} \\
+e_\text{new} &= \frac{1}{k} \sum_{e \in \text{neighbours}} e. \label{eq:new_emb}
+\end{align}
+
+Similarity $\operatorname{sim}$ is cosine similarity by default; Euclidean
+distance is supported as an alternative. Without any semantic descriptor of
+the new action, the centroid of all known embeddings serves as a
+least-committal heuristic initialisation; we do not claim formal optimality.
+
+\paragraph{Step 2: Optimistic exploration bonus.} The new action receives an
+additive exploration bonus $\beta$ (default $\beta=2.0$) that decays
+geometrically with each visit:
+
+\begin{equation}
+\beta \leftarrow \max(\beta_\text{min},\;
+  \beta \cdot \gamma_\text{bonus}), \quad \gamma_\text{bonus}=0.99.
+\end{equation}
+
+This encourages systematic exploration of the new action beyond uniform
+$\varepsilon$-greedy randomness.
+
+\paragraph{Step 3: Progressive freeze schedule.} To mitigate catastrophic
+forgetting of existing knowledge, we apply a three-phase unfreezing schedule:
+
+\begin{itemize}[nosep]
+  \item \textbf{Phase 1} (steps $[0, N_1)$, default $N_1=5{,}000$): Only the
+  new action's embedding is trainable. The encoder, Q-head, value head, and
+  all old action embeddings are frozen.
+  \item \textbf{Phase 2} (steps $[N_1, N_2)$, default $N_2=10{,}000$): The
+  Q-head and value head are unfrozen. The encoder remains frozen.
+  \item \textbf{Phase 3} (steps $[N_2, \infty)$): All parameters are unfrozen
+  with a reduced learning rate ($\text{LR} \leftarrow 0.1 \times
+  \text{LR}_\text{init}$).
+\end{itemize}
+
+\paragraph{Step 4: Target network update.} The target network's action
+embedding table is synchronised with the online table immediately after
+expansion (\texttt{add\_embedding} copies the online embedding to the target
+table). The encoder, Q-head, and value head continue to follow the standard
+periodic hard-sync schedule (every $1{,}000$ steps).
+
+\subsection{Training Objective}
+
+The agent is trained using the standard DQN off-policy objective. For a
+transition $(s, a, r, s', d)$, the TD target is:
+
+\begin{equation}
+y = r + \gamma \cdot \max_{a' \in \mathcal{A}_\text{current}} Q'(s', a'),
+\label{eq:td_target}
+\end{equation}
+
+where $\gamma=0.99$ and $Q'$ denotes the target network. Critically, the max
+is taken over the \emph{current} action set $\mathcal{A}_\text{current}$, which
+may be larger than the set that existed when the transition was recorded. This
+is justified by the monotonicity property of nested action
+spaces~\cite{farquhar2020growing}: $V^*_i(s) \leq V^*_j(s)$ for $i < j$, so
+the expanded max correctly reflects the increased value of $s'$.
+
+An optional auxiliary dynamics loss shapes the embedding space:
+
+\begin{equation}
+\mathcal{L}_\text{aux} = \operatorname{MSE}\big(\Delta_\text{pred},\;
+  \varphi(s') - \varphi(s)\big),\quad
+  \Delta_\text{pred} = \text{DynamicsHead}([\varphi(s); e_a]),
+\end{equation}
+
+weighted by $\lambda_\text{aux}=0.01$ in the total loss
+$\mathcal{L} = \mathcal{L}_\text{TD} + \lambda_\text{aux}
+\mathcal{L}_\text{aux}$. The motivation is to encourage the embedding space to
+encode transition dynamics; whether this in fact produces semantically
+meaningful structure is an open question that we flag as requiring embedding
+visualisation analysis.
+
+\subsection{Design Rationale}
+
+Table~\ref{tab:design} summarises the key architectural decisions and their
+justifications.
+
+\begin{table}[h]
+  \centering
+  \caption{Design decisions and inductive bias justifications.}
+  \label{tab:design}
+  \begin{tabular}{lp{0.6\linewidth}}
+    \toprule
+    \textbf{Decision} & \textbf{Justification} \\
+    \midrule
+    Factorized $Q(s,a)=f_Q(\varphi(s),e_a)$ &
+    Decouples action identity from Q-function; enables zero-shot Q-value
+    estimates for unseen actions via embedding similarity. \\
+    \addlinespace
+    Action embedding table &
+    Discrete actions lack natural feature vectors; learned embeddings can
+    capture similarity structure. \\
+    \addlinespace
+    $k$-NN centroid initialisation &
+    Without semantic descriptors, the centroid of known embeddings provides a
+    least-committal heuristic starting point. \\
+    \addlinespace
+    Progressive freeze (Phase 1$\to$2$\to$3) &
+    Isolates new-action parameters during initial learning; state
+    representations transfer because the state space is unchanged. \\
+    \addlinespace
+    Off-policy replay (DQN) &
+    Old transitions remain valid after expansion; action indices are stable
+    and the TD target naturally includes new actions. \\
+    \addlinespace
+    Optional auxiliary dynamics loss &
+    Hypothesised to shape the embedding space to encode transition dynamics,
+    potentially improving $k$-NN initialisation quality (untested). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Configuration}
+
+All hyperparameters are exposed through a typed \texttt{ModelConfig} dataclass.
+The default configuration is shown in Table~\ref{tab:config}.
+
+\begin{table}[h]
+  \centering
+  \caption{Default \texttt{ModelConfig} hyperparameters.}
+  \label{tab:config}
+  \begin{tabular}{lrc}
+    \toprule
+    \textbf{Parameter} & \textbf{Default} & \textbf{Description} \\
+    \midrule
+    $\texttt{obs\_dim}$ / $\texttt{encoder\_dim}$ & 64 / 256 &
+      Observation / encoder dimension \\
+    $\texttt{d\_embedding}$ & 64 & Action embedding dimension \\
+    $\texttt{k\_nn}$ & 3 & Neighbours for $k$-NN initialisation \\
+    $\texttt{q\_form}$ & factorized & Q-function variant \\
+    $\texttt{optimistic\_init\_bonus}$ & 2.0 & Exploration bonus for new actions \\
+    $\texttt{freeze\_encoder\_steps}$ & 10{,}000 & Phase 1--2 duration (env steps) \\
+    $\texttt{freeze\_q\_head\_steps}$ & 5{,}000 & Phase 2 entry (env steps) \\
+    $\texttt{expansion\_cooldown}$ & 1{,}000 & Min steps between expansions \\
+    $\gamma$ / $\texttt{lr}$ & 0.99 / $3\times10^{-4}$ & Discount / learning rate \\
+    Total parameters & 272{,}513 & All components (default config) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+\section{Validation Setup}
+\label{sec:setup}
+
+Our validation harness characterises the architecture along four layers. We
+emphasise that this harness evaluates \emph{structural and numerical}
+properties, not task performance on real environments. All evaluations use
+synthetic proxy data (random states, simulated transitions) unless otherwise
+noted.
+
+\paragraph{Layer 1a: Shape correctness.}
+Twelve tests verify that every component produces the expected output
+dimensions for both vector and image observations, for single and batched
+inputs, and before and after action-space expansion. Batch-computed Q-values
+are verified against per-action computation (consistency at $10^{-5}$
+tolerance).
+
+\paragraph{Layer 1b: Gradient flow.}
+Five tests verify that gradients flow through all trainable parameters, that no
+NaN gradients are produced, that the embedding gradient-freeze mask correctly
+zeroes gradients for frozen rows, and that in Phase~1 only the new embedding
+receives gradients.
+
+\paragraph{Layer 1c: RL-specific correctness.}
+Ten tests verify that actions fall within the valid range (before and after
+expansion), that the exploration entropy is adequate under high $\varepsilon$,
+that the target network remains stable between synchronisation intervals, that
+the expansion cooldown guard blocks rapid successive expansions, and that the
+exploration bonus decays monotonically.
+
+\paragraph{Layer 1d: Numerical stability.}
+Nine tests verify that no component produces NaN or Inf values in forward
+passes under standard conditions, under extreme input values ($\times 10^4$),
+and after action expansion. The encoder and Q-head forward passes are verified
+to produce finite output in bf16 precision, confirming mixed-precision
+readiness.
+
+\paragraph{Layer 2: Synthetic micro-benchmarks.}
+Seventeen tests characterise domain-specific properties:
+\begin{itemize}[nosep]
+  \item \textbf{Q-degradation metric:} After expansion with Phase~1 freezing,
+  old-action Q-values are preserved to tolerance $10^{-6}$ (no training steps).
+  \item \textbf{Monotonicity property:} The maximum Q-value over the expanded
+  action set is at least as large as over the original set, consistent with
+  Farquhar et al.~\cite{farquhar2020growing}.
+  \item \textbf{Multiple expansions:} Forward pass, Q-values, and TD updates
+  remain valid through three sequential expansions ($2\to3\to4\to5$ actions).
+  \item \textbf{Trainability:} A 200-step CartPole rollout with simulated
+  action expansion produces finite TD losses throughout.
+\end{itemize}
+
+\paragraph{Layer 3: Ablation study.}
+Fourteen single-field \texttt{ModelConfig} changes are evaluated on a proxy
+metric: Q-value statistics (mean, std, range) computed over 50 random states,
+plus TD loss on a synthetic batch and the Q-value of a newly added action
+immediately after expansion. All ablations share the same random seed.
+
+\paragraph{Layer 4: Profiling.}
+Forward pass, training step, and action-expansion cost are profiled using
+\texttt{torch.profiler}. FLOPs are estimated as $2\times$ parameter count for
+forward and $6\times$ for forward+backward.
+
+\paragraph{Compute environment.}
+All tests and ablations were run on CPU (no GPU available). The total runtime
+of the full 53-test suite is under 30~seconds. The ablation runner completes
+in under 60~seconds. Profiling estimates forward pass time at
+${<}\,1$~ms per step and training step at ${<}\,5$~ms per step (batch size 64).
+
+\paragraph{What the harness does not check.}
+Our harness explicitly does \emph{not} measure: (a) task performance on real
+environments, (b) cumulative reward curves, (c) comparison against baselines
+(retrain-from-scratch, fixed-action oracle), or (d) statistical significance
+across multiple seeds. These are identified as required next steps in
+Section~\ref{sec:discussion}.
+
+\subsection{Demoware: CartPole with Simulated Expansion}
+
+For development and integration testing, we provide
+\texttt{ExpandingActionWrapper}, a Gymnasium wrapper that simulates action-space
+expansion at a configurable step threshold by injecting a new action (mapped to
+a no-op) into a \texttt{Discrete} action space. This is demoware only---the new
+action has no semantic effect in CartPole---but it validates that the agent's
+expansion protocol executes correctly in an end-to-end environment loop.
+
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Validation Harness}
+
+All 53 tests in the validation harness pass. Table~\ref{tab:tests} summarises
+the coverage.
+
+\begin{table}[h]
+  \centering
+  \caption{Validation harness test coverage. All 53 tests pass.}
+  \label{tab:tests}
+  \begin{tabular}{lcc}
+    \toprule
+    \textbf{Test class} & \textbf{Tests} & \textbf{Coverage area} \\
+    \midrule
+    \texttt{TestShapes} & 12 & Component shapes, batch consistency, expansion \\
+    \texttt{TestGradients} & 5 & Gradient flow, NaN, freeze mask, Phase~1 isolation \\
+    \texttt{TestRLProperties} & 10 & Action range, exploration, target sync, bonus, cooldown \\
+    \texttt{TestNumerics} & 9 & NaN/Inf, bf16, extreme values, TD loss finiteness \\
+    \texttt{TestRLBenchmarks} & 8 & Q-degradation, monotonicity, rollout sanity, expansions \\
+    \texttt{TestSyntheticBenchmarks} & 9 & Discounted return, TD target, $k$-NN, params, CNN \\
+    \midrule
+    Total & 53 & \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Synthetic Micro-Benchmarks}
+
+Table~\ref{tab:benchmarks} presents the key synthetic benchmark results. These
+characterise architectural properties under controlled conditions; they are
+\emph{not} task-performance numbers.
+
+\begin{table}[h]
+  \centering
+  \caption{Synthetic micro-benchmark results. All observations are from
+  controlled proxy conditions, not trained-model evaluation.}
+  \label{tab:benchmarks}
+  \begin{tabular}{lp{0.4\linewidth}l}
+    \toprule
+    \textbf{Property} & \textbf{Observation} & \textbf{Condition} \\
+    \midrule
+    Q-degradation (no training) &
+      Old-action Q preserved at $10^{-6}$ &
+      Phase~1 frozen params \\
+    Q-degradation (20 train steps) &
+      Q-norm change ${<}\,5\times$ &
+      Post-expansion training \\
+    Monotonicity &
+      $\max Q(A_\text{expanded}) \geq \max Q(A_\text{orig})$ &
+      Random init, no training \\
+    Batch Q consistency &
+      Batch vs. per-action Q match at $10^{-5}$ &
+      Full action set \\
+    TD loss finiteness &
+      Always finite &
+      Pre- and post-expansion \\
+    bf16 stability &
+      No NaN/Inf in forward pass &
+      Encoder and QHead \\
+    Freeze schedule &
+      Phase 1$\to$2$\to$3 transitions correct &
+      Verified via
+      \texttt{maybe\_update\_freeze\_schedule} \\
+    Multiple expansions &
+      All forward/backward ops valid &
+      $2 \to 3 \to 4 \to 5$ actions \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Ablation Study}
+
+Table~\ref{tab:ablations} presents the 14-condition ablation study. All
+results use proxy metrics (Q-value statistics on random states, TD loss on
+synthetic batches) and characterise the design space rather than constitute
+comparative validation.
+
+\begin{table}[h]
+  \centering
+  \caption{Ablation study results. All configurations share the same random
+  seed. The proxy metric (Q-stats on random states) cannot substitute for
+  training-based evaluation.}
+  \label{tab:ablations}
+  \small
+  \begin{tabular}{lccccc}
+    \toprule
+    \textbf{Ablation} & \textbf{Config $\Delta$} &
+      $\mathbf{\bar{Q}}$ & $\mathbf{\sigma_Q}$ &
+      $\mathbf{\mathcal{L}_\text{TD}}$ & $\mathbf{Q(a_\text{new})}$ \\
+    \midrule
+    Baseline & --- & 0.116 & 0.0022 & 0.846 & 0.032 \\
+    No $k$-NN init & $k_\text{nn}=3 \to 0$ & 0.116 & 0.0022 & 0.825 & NaN \\
+    No bonus & bonus $2.0 \to 0.0$ & 0.116 & 0.0022 & 0.863 & 0.122 \\
+    No freeze & steps $10\text{K} \to 0$ & 0.116 & 0.0022 & 0.824 & 0.086 \\
+    Dueling Q & $\texttt{q\_form}=\text{dueling}$ & $-0.178$ & 0.0022 & 0.694 & $-0.711$ \\
+    No aux loss & aux $=\text{False}$ & 0.116 & 0.0022 & 0.798 & $-0.109$ \\
+    No emb freeze & freeze $=\text{False}$ & 0.116 & 0.0022 & 0.807 & 0.037 \\
+    Small emb & $d_\text{emb}=64\to 8$ & 0.046 & 0.0005 & 0.760 & $-0.271$ \\
+    Large emb & $d_\text{emb}=64\to 256$ & $-0.160$ & 0.0027 & 0.902 & $-0.201$ \\
+    Euclidean sim & cosine$\to$euclidean & 0.116 & 0.0022 & 0.838 & 0.046 \\
+    High bonus & bonus $2.0\to 10.0$ & 0.116 & 0.0022 & 0.780 & 0.072 \\
+    Short freeze & steps $10\text{K}\to 100$ & 0.116 & 0.0022 & 0.794 & $-0.053$ \\
+    Long freeze & steps $10\text{K}\to 100\text{K}$ & 0.116 & 0.0022 & 0.799 & $-0.046$ \\
+    Small Q-head & hidden $128\to 16$ & 0.145 & 0.0014 & 0.831 & 0.002 \\
+    Deep Q-head & layers $2\to 4$ & $-0.085$ & 0.0004 & 0.894 & $-0.068$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Provisional observations.}
+Several structural patterns emerge from the ablation data, all of which require
+training-based verification:
+
+\begin{enumerate}
+  \item \textbf{Embedding capacity matters.} Reducing $d_\text{emb}$ from 64
+  to 8 collapses the Q-value range ($\sigma_Q$ drops from 0.0022 to 0.0005),
+  suggesting that the embedding space lacks the capacity to differentiate
+  actions. This is a potential concern for the $k$-NN initialisation
+  hypothesis.
+  \item \textbf{Dueling variant shifts the loss landscape.} The dueling
+  decomposition produces a lower mean Q and lower TD loss, likely because the
+  centering mechanism subtracts the known-action advantage mean. Whether this
+  helps or harms task performance is unknown.
+  \item \textbf{Auxiliary loss correlates with new-action Q sign.} Without the
+  auxiliary dynamics loss, the new action's post-expansion Q-value is negative
+  ($-0.109$), compared to positive for the baseline ($0.032$). This
+  correlation is measured but we do not attribute causality---whether the
+  auxiliary loss produces ``better'' or more semantically meaningful embeddings
+  remains untested and requires embedding-space analysis (t-SNE, similarity
+  matrices).
+  \item \textbf{Proxy metrics cannot distinguish $k$-NN from random init.}
+  The baseline and \texttt{no\_knn\_init} conditions produce identical Q-stats
+  on random states. This reinforces that the core hypothesis---$k$-NN
+  initialisation provides better-than-random zero-shot Q-values---can only be
+  tested through training on an actual RL task.
+\end{enumerate}
+
+
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Interpretation}
+
+Our results validate the \emph{structural} properties of the Action-Incremental
+DQN architecture. The factorized Q-function correctly computes Q-values before
+and after expansion; the gradient-freeze mask isolates new-action parameters in
+Phase~1; the $k$-NN initialisation produces finite, non-NaN embeddings; the TD
+loss remains finite throughout expansion; and bf16 forward passes are
+numerically stable. These are necessary conditions for the architecture to be
+useful, but they are not sufficient to establish empirical effectiveness.
+
+The ablation study reveals design-space structure that would inform future
+work: embedding dimension is a critical capacity parameter (small
+$d_\text{emb}$ collapses the action representation); the auxiliary dynamics
+loss correlates with positive new-action Q-values; and the dueling variant
+changes the loss landscape. However, these observations remain provisional
+because the proxy metric (Q-stats on random states) does not measure task
+performance.
+
+\subsection{Comparison to Prior Work}
+
+On structural grounds, our architecture differs from
+GAS~\cite{farquhar2020growing} in that it does not require a predefined
+hierarchy---new actions are integrated via $k$-NN in embedding space rather
+than through a parent-child Q-decomposition. It differs from
+morphin~\cite{delarosa2026morphin} by operating in the deep RL regime with
+function approximation. It differs from Headless-AD~\cite{sinii2023headless}
+by addressing incremental introduction during training rather than
+generalisation to fixed larger sets at test time. Whether these structural
+differences translate to practical advantages remains an open empirical
+question.
+
+\subsection{Limitations}
+\label{sec:limitations}
+
+We enumerate the limitations of this work explicitly:
+
+\begin{enumerate}
+  \item \textbf{No trained-model evaluation.} All results are from synthetic
+  proxy metrics (random-state Q-statistics, simulated transitions). No RL
+  agent was trained on an actual task with reward feedback.
+  \item \textbf{No custom benchmark environment.} The DAVE-game analogue,
+  continuous control, and goal-conditioned scenarios described in the research
+  contract all raise \texttt{NotImplementedError} in our codebase. The CartPole
+  demoware maps new actions to a no-op, which is degenerate.
+  \item \textbf{No baseline comparisons.} Retrain-from-scratch,
+  fixed-action-oracle, zero-initialisation, and GAS-adapted baselines are not
+  implemented. The sub-linear fine-tuning and no-forgetting claims cannot be
+  validated without them.
+  \item \textbf{Single-seed statistics.} All tests and ablations use a single
+  random seed. The research contract requires $\geq\!10$ seeds with
+  mean $\pm$ std reporting.
+  \item \textbf{Embedding quality uncharacterised.} No t-SNE visualisation,
+  cosine similarity matrix analysis, or $k$-NN initialisation-quality metric
+  has been computed. The hypothesis that the auxiliary dynamics loss produces
+  semantically meaningful embeddings is unverified.
+  \item \textbf{Softmax denominator shift unmeasured.} The dueling centering
+  mechanism is implemented as a mitigation for denominator shift, but the
+  magnitude of the shift has not been empirically characterised.
+  \item \textbf{Single-task focus.} The architecture has been evaluated only
+  on single-expansion proxy scenarios. Cross-task transfer, backwards
+  compatibility after multiple expansions, and sensitivity to expansion order
+  are unstudied.
+\end{enumerate}
+
+These limitations are not shortcomings of the implementation---they represent
+the honest scope of a reference-architecture paper that provides the design,
+the harness, and the reproducible starting point, leaving empirical validation
+to subsequent work.
+
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented Action-Incremental DQN, a reference architecture and
+comprehensive validation harness for the understudied problem of unexpected
+action-space expansion in deep reinforcement learning. The architecture
+introduces three mechanisms---factorized Q-function with learnable action
+embeddings, $k$-NN centroid initialisation for new actions, and progressive
+three-phase unfreezing---that together form a concrete hypothesis for how deep
+RL agents could incorporate new actions without catastrophic forgetting or
+retraining from scratch. Our validation harness provides 53 automated tests
+covering shape correctness, gradient flow, numerical stability, and synthetic
+micro-benchmarks, alongside a 14-condition ablation study that characterises
+the design space.
+
+Three concrete follow-up directions emerge from this work:
+
+\begin{enumerate}
+  \item \textbf{Full training-based evaluation.} The immediate priority is
+  building the custom Gymnasium benchmark environment (DAVE-game analogue,
+  continuous control, goal-conditioned affordances) and running training
+  experiments with 10+ seeds per condition, comparing against
+  retrain-from-scratch and fixed-action-oracle baselines.
+  \item \textbf{Embedding space analysis.} A systematic characterisation of
+  the learned embedding space---t-SNE visualisation, cosine similarity
+  matrices, and $k$-NN initialisation quality metrics---would test the core
+  assumption that action embeddings encode semantically meaningful structure.
+  \item \textbf{Ablation validation on real tasks.} The provisional ablation
+  patterns (embedding capacity, auxiliary loss correlation, dueling landscape
+  shift) should be validated on actual RL tasks, with hyperparameter
+  sensitivity sweeps across $k_\text{nn}$, $d_\text{emb}$, and freeze duration.
+\end{enumerate}
+
+The reference implementation and validation harness are included in the
+accompanying submission package as a reproducible starting point for the
+community to build on. The architecture, the harness, and the honest
+characterisation of what remains unknown are, we hope, a useful contribution
+towards deep RL systems that can gracefully adapt to changing action
+repertoires in the wild.
+
+
+% References
+\section*{References}
+{\small
+\begin{thebibliography}{99}
+
+\bibitem{mnih2015human}
+Mnih, V., Kavukcuoglu, K., Silver, D., Rusu, A.A., Veness, J., Bellemare,
+M.G., Graves, A., Riedmiller, M., Fidjeland, A.K., Ostrovski, G., \& others.
+\newblock Human-level control through deep reinforcement learning.
+\newblock {\it Nature}, 518(7540):529--533, 2015.
+
+\bibitem{lillicrap2015continuous}
+Lillicrap, T.P., Hunt, J.J., Pritzel, A., Heess, N., Erez, T., Tassa, Y.,
+Silver, D., \& Wierstra, D.
+\newblock Continuous control with deep reinforcement learning.
+\newblock {\it arXiv preprint arXiv:1509.02971}, 2015.
+
+\bibitem{farquhar2020growing}
+Farquhar, G., Gustafson, L., Lin, Z., Whiteson, S., Usunier, N., \& Synnaeve,
+G.
+\newblock Growing action spaces.
+\newblock In {\it Proceedings of the 37th International Conference on Machine
+  Learning (ICML)}, 2020.
+
+\bibitem{delarosa2026morphin}
+de la Rosa, L.E., Cruz, F., \& Wrede, B.
+\newblock morphin: Self-adaptive Q-learning for changing action spaces.
+\newblock {\it arXiv preprint arXiv:2601.20714}, 2026.
+
+\bibitem{sinii2023headless}
+Sinii, V., Nikulin, A., Kolesnikov, S., \& Burda, Y.
+\newblock In-context reinforcement learning with variable action spaces.
+\newblock In {\it NeurIPS 2023 Workshop on Generalization in Reinforcement
+  Learning}, 2023.
+
+\bibitem{rusu2016progressive}
+Rusu, A.A., Rabinowitz, N.C., Desjardins, G., Soyer, H., Kirkpatrick, J.,
+Kavukcuoglu, K., Pascanu, R., \& Hadsell, R.
+\newblock Progressive neural networks.
+\newblock {\it arXiv preprint arXiv:1606.04671}, 2016.
+
+\bibitem{kirkpatrick2017overcoming}
+Kirkpatrick, J., Pascanu, R., Rabinowitz, N., Veness, J., Desjardins, G.,
+Rusu, A.A., Milan, K., Quan, J., Ramalho, T., Grabska-Barwinska, A., \&
+others.
+\newblock Overcoming catastrophic forgetting in neural networks.
+\newblock {\it Proceedings of the National Academy of Sciences},
+  114(13):3521--3526, 2017.
+
+\bibitem{venkatesan2016progressive}
+Venkatesan, R. \& Er, M.J.
+\newblock A novel progressive learning technique for multi-class
+classification.
+\newblock {\it Neurocomputing}, 207:310--321, 2016.
+
+\bibitem{seyde2024growing}
+Seyde, T., Schwarting, W., Karaman, S., \& Rus, D.
+\newblock Growing Q-networks: learning continuous control with growing action
+spaces.
+\newblock In {\it Proceedings of the 6th Conference on Robot Learning (CoRL)},
+  PMLR 242, 2024.
+
+\bibitem{schulman2017proximal}
+Schulman, J., Wolski, F., Dhariwal, P., Radford, A., \& Klimov, O.
+\newblock Proximal policy optimization algorithms.
+\newblock {\it arXiv preprint arXiv:1707.06347}, 2017.
+
+\bibitem{wang2016dueling}
+Wang, Z., Schaul, T., Hessel, M., Van Hasselt, H., Lanctot, M., \&
+  Freitas, N.
+\newblock Dueling network architectures for deep reinforcement learning.
+\newblock In {\it Proceedings of the 33rd International Conference on Machine
+  Learning (ICML)}, 2016.
+
+\bibitem{vanhasselt2016deep}
+Van Hasselt, H., Guez, A., \& Silver, D.
+\newblock Deep reinforcement learning with double Q-learning.
+\newblock In {\it Proceedings of the 30th AAAI Conference on Artificial
+  Intelligence}, 2016.
+
+\bibitem{mnih2013playing}
+Mnih, V., Kavukcuoglu, K., Silver, D., Graves, A., Antonoglou, I.,
+  Wierstra, D., \& Riedmiller, M.
+\newblock Playing Atari with deep reinforcement learning.
+\newblock {\it arXiv preprint arXiv:1312.5602}, 2013.
+
+\end{thebibliography}
+}
+
+
+% Appendix
+\appendix
+\section{Reproducibility Instructions}
+
+All commands assume execution from the repository root directory
+(e.g., \texttt{/path/to/work}).
+
+\subsection{Validation Harness}
+\begin{verbatim}
+# Smoke tests (22 tests, no GPU required)
+PYTHONPATH=$PWD/coder:$PYTHONPATH python coder/smoke_test.py
+
+# Comprehensive test suite (53 tests)
+PYTHONPATH=$PWD/coder:$PYTHONPATH pytest validator/test_model.py -v --tb=short
+\end{verbatim}
+
+\subsection{Ablation Study}
+\begin{verbatim}
+PYTHONPATH=$PWD/coder:$PYTHONPATH python validator/run_ablations.py
+\end{verbatim}
+
+\subsection{Profiling}
+\begin{verbatim}
+# Forward pass profile
+PYTHONPATH=$PWD/coder:$PYTHONPATH \
+  python validator/profile_model.py --mode forward --steps 20
+
+# Training step profile
+PYTHONPATH=$PWD/coder:$PYTHONPATH \
+  python validator/profile_model.py --mode train --steps 10
+
+# Action expansion profile
+PYTHONPATH=$PWD/coder:$PYTHONPATH \
+  python validator/profile_model.py --mode expansion
+
+# Component parameter counts
+PYTHONPATH=$PWD/coder:$PYTHONPATH \
+  python validator/profile_model.py --mode component_params
+\end{verbatim}
+
+\subsection{Demoware (CartPole with Simulated Expansion)}
+\begin{verbatim}
+PYTHONPATH=$PWD/coder:$PYTHONPATH \
+  python coder/train.py --env cartpole --n_episodes 2000
+\end{verbatim}
+
+\subsection{Dependencies}
+\begin{itemize}
+  \item Python $\geq$ 3.9, PyTorch $\geq$ 2.0, Gymnasium $\geq$ 0.28, NumPy
+  \item No GPU required for any test, ablation, or profiling command
+  \item All hyperparameters are documented in \texttt{coder/model\_config.py}
+  as a typed \texttt{ModelConfig} dataclass with sensible defaults
+\end{itemize}
+
+
+% NeurIPS Checklist
+\newpage
+\section*{NeurIPS Paper Checklist}
+
+\paragraph{1. Claims.}
+Do the main claims made in the abstract and introduction accurately reflect the
+paper's contributions and scope?
+\textbf{Yes.} The paper claims only to present a reference architecture and
+validation harness for the problem of unexpected action-space expansion. All
+contributions are phrased in terms of design artifacts and validated structural
+properties, not empirical superiority. The absence of trained-model evaluation
+and real-task results is explicitly stated throughout.
+
+\paragraph{2. Experiments.}
+Does the paper provide sufficient information to reproduce the experiments?
+\textbf{Yes.} The validation harness produces deterministic results with a
+fixed seed. Full reproducibility instructions, including exact commands for all
+53 tests, the 14-condition ablation runner, and profiling scripts, are provided
+in the appendix. All hyperparameters are documented in the
+\texttt{ModelConfig} dataclass with defaults listed in Table~\ref{tab:config}.
+
+\paragraph{3. Theory.}
+Does the paper make theoretical contributions and, if so, are they supported?
+\textbf{Partially.} The paper leverages the monotonicity property of nested
+action spaces~\cite{farquhar2020growing} to justify the TD target formulation.
+No new theoretical results (theorems, proofs) are presented; the $k$-NN
+centroid initialisation is motivated as a heuristic rather than a formally
+optimal choice.
+
+\paragraph{4. Datasets.}
+Does the paper use datasets and, if so, are they documented?
+\textbf{No.} The paper does not use any real-world datasets. All evaluations
+use synthetic random states or the CartPole-v1 environment from Gymnasium (for
+demoware purposes only).
+
+\paragraph{5. Code.}
+Does the paper release code and, if so, is it documented?
+\textbf{Yes.} The reference implementation is included in the accompanying
+submission package. It includes:
+\begin{itemize}
+  \item \texttt{coder/model\_config.py}: typed dataclass for all hyperparameters
+  \item \texttt{coder/networks.py}: all network components with docstrings
+  \item \texttt{coder/agent.py}: \texttt{ActionIncrementalDQN} agent
+  \item \texttt{coder/env\_wrapper.py}: \texttt{ExpandingActionWrapper}
+  \item \texttt{coder/train.py}: training loop with CLI interface
+  \item \texttt{coder/smoke\_test.py}: 22-test smoke suite
+  \item \texttt{validator/test\_model.py}: 53-test pytest suite
+  \item \texttt{validator/run\_ablations.py}: 14-condition ablation runner
+  \item \texttt{validator/profile\_model.py}: profiling scripts
+\end{itemize}
+
+\paragraph{6. Broader impacts.}
+Does the paper discuss potential broader impacts?
+\textbf{Minimal.} This paper presents a reference architecture and validation
+harness for a foundational RL capability---adapting to changing action spaces.
+The work is at an early, pre-empirical stage. Potential societal impacts are
+commensurate with those of deep RL generally and are not amplified by this
+specific contribution. No immediate dual-use concerns are identified.
+
+\end{document}

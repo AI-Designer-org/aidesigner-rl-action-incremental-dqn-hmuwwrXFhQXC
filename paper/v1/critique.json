@@ -1,0 +1,67 @@
+{
+  "verdict": "needs_revision",
+  "iteration": 1,
+  "summary": "The draft is generally well scoped as a reference-architecture paper and consistently avoids claiming real-task performance. However, it contains a few claim-grounding and factual overreaches against the upstream artifacts, plus at least one likely fabricated or unverifiable citation that should be corrected before submission.",
+  "issues": [
+    {
+      "id": "i_01",
+      "severity": "blocker",
+      "category": "citations",
+      "location": "Related Work, paragraph 2; References entry `delarosa2026morphin`",
+      "problem": "The paper cites `de la Rosa et al., 2026` for `morphin: Self-adaptive Q-learning for changing action spaces` as if it were an established source, but the only grounding in the artifacts is an arXiv-style placeholder entry and internal research documents. Given the future-dated citation and lack of independently verifiable bibliographic grounding in the provided artifacts, this reads as a likely fabricated or at least insufficiently validated reference.",
+      "suggested_fix": "Verify that this paper actually exists with correct bibliographic details. If it does, provide the exact, checkable citation metadata; if not, remove or rewrite the discussion to avoid citing it as published prior work.",
+      "persisted_from_previous": false
+    },
+    {
+      "id": "i_02",
+      "severity": "major",
+      "category": "claims",
+      "location": "Method, Design Rationale table, row `Factorized Q(s,a)=f_Q(\u03c6(s),e_a)`; Conclusion, lines 779-781",
+      "problem": "The draft states or strongly implies that the architecture enables `zero-shot transfer` and lets agents incorporate new actions `without catastrophic forgetting`, but `claim_grounding.md` marks these as hypotheses or only partially tested. The artifacts support structural sanity checks and limited proxy tests, not these stronger capability claims as settled properties.",
+      "suggested_fix": "Downgrade these statements to hypothesis language everywhere they appear, e.g. `is intended to support` or `is designed to mitigate`, and explicitly tie them to the synthetic validation scope rather than presenting them as established outcomes.",
+      "persisted_from_previous": false
+    },
+    {
+      "id": "i_03",
+      "severity": "major",
+      "category": "research_eval",
+      "location": "Related Work, subsection `Research Gap`; Abstract, sentence beginning `We present a reference architecture... for this understudied problem.`",
+      "problem": "The paper says `To our knowledge, prior work does not directly address...` and frames the gap as established, but `validator/research_eval/claim_grounding.md` explicitly marks the novelty claim `No deep RL method handles truly unexpected action-space expansion...` as `TODO: unverified`. The current wording states an unverified literature claim too definitively.",
+      "suggested_fix": "Qualify the novelty language more carefully, e.g. `We are not aware of prior deep-RL systems that...`, and note that this is based on the current literature survey rather than a fully exhaustive verified claim. Avoid presenting the absence of prior work as a confirmed fact.",
+      "persisted_from_previous": false
+    },
+    {
+      "id": "i_04",
+      "severity": "major",
+      "category": "factual",
+      "location": "Method, paragraph `State encoder`, sentences specifying `default: d_obs=64` and `For image observations, \u03c6 uses a standard DQN-style CNN`",
+      "problem": "These implementation details are presented as paper-level defaults, but the executable artifacts show environment-specific observation sizes (e.g. CartPole uses 4-D observations) and only validate CNN forward-shape support synthetically. As written, the paragraph blurs repository defaults, demonstration settings, and validated usage conditions.",
+      "suggested_fix": "Separate architectural template choices from exercised settings. For example, state that the reference implementation exposes configurable vector and image encoders, with synthetic validation for 64-D vectors and 84x84 image inputs, while the included demoware uses CartPole observations.",
+      "persisted_from_previous": false
+    },
+    {
+      "id": "i_05",
+      "severity": "minor",
+      "category": "structure",
+      "location": "NeurIPS Paper Checklist, item 6 `Broader impacts`",
+      "problem": "The broader-impact discussion is extremely thin and effectively dismissive. Even for a systems/reference paper, reviewers typically expect at least a brief concrete discussion of possible downstream uses and misuse modes of adaptive RL systems rather than `No immediate dual-use concerns are identified`.",
+      "suggested_fix": "Add 2-4 concrete sentences naming plausible application areas and risks, such as autonomous systems adapting capabilities online, safety implications of unexpected action enablement, and the need for evaluation safeguards before deployment.",
+      "persisted_from_previous": false
+    }
+  ],
+  "scope_check": {
+    "overstates_empirical_results": false,
+    "claims_sota_without_numbers": false,
+    "relabels_synthetic_as_real": false,
+    "demands_trained_model_results": false,
+    "ignores_research_eval_gaps": true,
+    "states_unverified_claim_as_fact": true,
+    "claims_baseline_superiority_without_coverage": false
+  },
+  "stats": {
+    "blockers": 1,
+    "majors": 3,
+    "minors": 1,
+    "nits": 0
+  }
+}

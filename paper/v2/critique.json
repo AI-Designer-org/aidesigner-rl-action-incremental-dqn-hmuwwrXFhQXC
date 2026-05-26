@@ -1,0 +1,40 @@
+{
+  "verdict": "needs_revision",
+  "iteration": 2,
+  "summary": "The draft is substantially improved and now aligns well with the reference-architecture scope, with prior overclaiming mostly resolved. The remaining issues are a likely unverified citation presented as real prior work and one theoretical/factual overstatement that exceeds the grounding in the artifacts.",
+  "issues": [
+    {
+      "id": "i_01",
+      "severity": "blocker",
+      "category": "citations",
+      "location": "Introduction, paragraph 3, sentences discussing Morphin; Related Work, subsection `On-the-Fly Tabular Expansion`; References entry `delarosa2026morphin`",
+      "problem": "The paper still cites `de la Rosa et al., 2026` / `morphin: Self-adaptive Q-learning for changing action spaces` as concrete prior work, but the provided artifacts only ground it as an internal literature item and future-dated arXiv-style reference, not as a securely verified bibliographic source. Presented this way, it remains likely fabricated or at least insufficiently validated for submission.",
+      "suggested_fix": "Verify the paper exists and provide exact, checkable bibliographic metadata. If it cannot be independently verified, remove it from the formal related-work comparison and rephrase the discussion to avoid citing it as established prior work.",
+      "persisted_from_previous": true
+    },
+    {
+      "id": "i_06",
+      "severity": "major",
+      "category": "factual",
+      "location": "Method, Training Objective, sentences justifying Eq. (3), especially `This is justified by the monotonicity property... so the expanded max correctly reflects the increased value of s'`",
+      "problem": "This passage states too strongly that taking the TD max over the expanded action set is correct because of the monotonicity property from Growing Action Spaces. The artifacts support that the implementation follows this assumption and that a synthetic monotonicity check passes, but they do not ground that this justification transfers as a settled correctness result for the present factorized deep-RL architecture under function approximation and unexpected action addition. The current wording reads as a proven fact rather than an adopted design assumption.",
+      "suggested_fix": "Qualify the statement as an architectural assumption or motivation, e.g. say the TD target `follows the monotonicity intuition of Farquhar et al.` or `adopts the expanded-action max under the monotonicity assumption`, and note that formal correctness for the present architecture remains unproven.",
+      "persisted_from_previous": false
+    }
+  ],
+  "scope_check": {
+    "overstates_empirical_results": false,
+    "claims_sota_without_numbers": false,
+    "relabels_synthetic_as_real": false,
+    "demands_trained_model_results": false,
+    "ignores_research_eval_gaps": false,
+    "states_unverified_claim_as_fact": false,
+    "claims_baseline_superiority_without_coverage": false
+  },
+  "stats": {
+    "blockers": 1,
+    "majors": 1,
+    "minors": 0,
+    "nits": 0
+  }
+}

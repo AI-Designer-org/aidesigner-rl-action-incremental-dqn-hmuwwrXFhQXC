@@ -1,0 +1,31 @@
+{
+  "verdict": "needs_revision",
+  "iteration": 3,
+  "summary": "The draft is tightly scoped and substantially improved: it now consistently presents a reference architecture plus validation harness, discloses major evaluation gaps, and avoids unsupported empirical win claims. The main remaining issue is one central methodological justification still stated too strongly relative to the grounding in the artifacts.",
+  "issues": [
+    {
+      "id": "i_06",
+      "severity": "major",
+      "category": "factual",
+      "location": "Method, Section 3.3 Training Objective, paragraph after Eq. (5), especially the sentence `This is justified by the monotonicity property of nested action spaces ... so the expanded max correctly reflects the increased value of s'`",
+      "problem": "This passage still presents the expanded-action TD target as if its correctness for the present architecture were established by the monotonicity result from Growing Action Spaces. The research-eval artifacts ground this only as an adopted assumption/introduction-level intuition for the current factorized deep-RL design under function approximation, not as a proven correctness result for this method. `claim_grounding.md` explicitly frames the code as implementing the monotonicity assumption, and `scorecard.json` notes there is no formal proof that the factorized architecture preserves the property under function approximation.",
+      "suggested_fix": "Rephrase this justification as an architectural assumption or motivating intuition rather than a settled correctness claim; e.g., say the TD target `adopts the expanded-action max following the monotonicity intuition of Farquhar et al.` and add a short caveat that formal correctness for the present factorized deep-RL setting remains unproven.",
+      "persisted_from_previous": true
+    }
+  ],
+  "scope_check": {
+    "overstates_empirical_results": false,
+    "claims_sota_without_numbers": false,
+    "relabels_synthetic_as_real": false,
+    "demands_trained_model_results": false,
+    "ignores_research_eval_gaps": false,
+    "states_unverified_claim_as_fact": false,
+    "claims_baseline_superiority_without_coverage": false
+  },
+  "stats": {
+    "blockers": 0,
+    "majors": 1,
+    "minors": 0,
+    "nits": 0
+  }
+}
